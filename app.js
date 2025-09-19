@@ -3,7 +3,6 @@ const promClient = require('prom-client');
 const os = require('os');
 
 const app = express();
-app.disable('x-powered-by');
 const port = 3000;
 
 // Create a Registry which registers the metrics
@@ -238,13 +237,8 @@ app.get('/error', (req, res) => {
   });
 });
 
-// Start server only if not in test mode
-if (process.env.NODE_ENV !== 'test') {
-  app.listen(port, () => {
-    console.log(`Enterprise Demo App running on port ${port}`);
-    console.log(`Version: ${process.env.APP_VERSION || 'v1.0.0'}`);
-    console.log(`Hostname: ${os.hostname()}`);
-  });
-}
-
-module.exports = app;
+app.listen(port, () => {
+  console.log(`Enterprise Demo App running on port ${port}`);
+  console.log(`Version: ${process.env.APP_VERSION || 'v1.0.0'}`);
+  console.log(`Hostname: ${os.hostname()}`);
+});
