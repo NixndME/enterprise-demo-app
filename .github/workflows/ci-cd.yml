@@ -1,0 +1,131 @@
+name: Enterprise Demo CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: nixndme/enterprise-demo-app
+
+jobs:
+  # Security and Quality Checks
+  security-scan:
+    name: Security & Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Lint code
+      run: npm run lint
+
+    - name: Run tests
+      run: npm test
+
+    - name: Security audit
+      run: npm audit --audit-level=high
+
+    - name: Check for secrets
+      run: |
+        echo "Checking for common secret patterns..."
+        if grep -r "password\s*=" . --exclude-dir=node_modules --exclude-dir=.git; then
+          echo "❌ Found hardcoded passwords!"
+          exit 1
+        fi
+        if grep -r "api[_-]key\s*=" . --exclude-dir=node_modules --exclude-dir=.git; then
+          echo "❌ Found hardcoded API keys!"
+          exit 1
+        fi
+        if grep -r "secret\s*=" . --exclude-dir=node_modules --exclude-dir=.git; then
+          echo "❌ Found hardcoded secrets!"
+          exit 1
+        fi
+        echo "✅ No obvious secrets found"
+
+    - name: Container security scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'table'
+
+  # Build and Push Docker Image
+  build-and-push:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=v1.0.0,enable={{is_default_branch}}
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Container image security scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.IMAGE_NAME }}:latest
+        format: 'table'
+        exit-code: '1'
+        severity: 'HIGH,CRITICAL'
+
+  # Deployment notification
+  notify-deployment:
+    name: Notify Deployment
+    runs-on: ubuntu-latest
+    needs: [ build-and-push ]
+    if: always()
+    steps:
+    - name: Deployment Status
+      run: |
+        if [[ "${{ needs.build-and-push.result }}" == "success" ]]; then
+          echo "✅ Docker image built successfully!"
+          echo "🚀 Image: ${{ env.IMAGE_NAME }}:latest"
+          echo "📝 Now update your ArgoCD application to deploy"
+        else
+          echo "❌ Build pipeline failed!"
+          exit 1
+        fi
